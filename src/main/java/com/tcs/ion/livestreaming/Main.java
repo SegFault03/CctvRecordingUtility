@@ -14,9 +14,10 @@ public class Main {
         // Default paths for output and configuration
         String outputPath = "cctv-recording-output";
         String configFilePath = "config/camera-config.json";
+        int bufferSize = 100;
 
         // Get the singleton instance of the recording service
-        CCTVRecordingService cctvRecordingService = CCTVRecordingService.getInstance(outputPath, configFilePath);
+        CCTVRecordingService cctvRecordingService = CCTVRecordingService.getInstance(outputPath, configFilePath, bufferSize);
 
         // Start the recording service
         cctvRecordingService.start();

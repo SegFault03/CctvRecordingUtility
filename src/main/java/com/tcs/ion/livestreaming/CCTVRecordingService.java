@@ -25,9 +25,11 @@ import java.util.stream.Stream;
  */
 public class CCTVRecordingService {
     /** Base directory for all camera recordings */
-    private final String outputRecordingPath;
+    private final String RECORDING_OUTPUT_PATH;
     /** Path to JSON configuration file */
-    private final String cameraConfigFilePath;
+    private final String CAMERA_CONFIG_FILE_PATH;
+    /** Queue size */
+    private final int BUFFER_SIZE;
     /** Size of each video segment in seconds */
     private int chunkSize;
     /** Scheduled recording start time in format "yyyy-MM-dd HH:mm:ss" */
@@ -38,6 +40,8 @@ public class CCTVRecordingService {
     private ConcurrentHashMap<Integer, CameraRecordingDetails> currentlyRecordingCameraDetailMap;
     /** Map of running tasks and processes indexed by camera resource ID */
     private ConcurrentHashMap<Integer, TaskBean> futureTaskMap;
+    /** BlockingQueue for storing new recording files to be processed and uploaded */
+    private BlockingQueue<String> filesPathsToProcess;
     /** Thread pool for file system watch services */
     private ExecutorService watchServiceThreadPool;
     /** Thread pool for ffmpeg processes */
@@ -54,12 +58,13 @@ public class CCTVRecordingService {
     /**
      * Private constructor for singleton pattern.
      * 
-     * @param outputRecordingPath Base directory where all recordings will be stored
-     * @param cameraConfigFilePath Path to the JSON configuration file
+     * @param RECORDING_OUTPUT_PATH Base directory where all recordings will be stored
+     * @param CAMERA_CONFIG_FILE_PATH Path to the JSON configuration file
      */
-    private CCTVRecordingService(String outputRecordingPath, String cameraConfigFilePath) {
-        this.outputRecordingPath = outputRecordingPath;
-        this.cameraConfigFilePath = cameraConfigFilePath;
+    private CCTVRecordingService(String RECORDING_OUTPUT_PATH, String CAMERA_CONFIG_FILE_PATH, int bufferSize) {
+        this.RECORDING_OUTPUT_PATH = RECORDING_OUTPUT_PATH;
+        this.CAMERA_CONFIG_FILE_PATH = CAMERA_CONFIG_FILE_PATH;
+        this.BUFFER_SIZE = bufferSize;
     }
 
     /**
@@ -70,9 +75,9 @@ public class CCTVRecordingService {
      * @param cameraConfigFilePath Path to the JSON configuration file
      * @return The singleton instance of CCTVRecordingService
      */
-    public static CCTVRecordingService getInstance(String outputRecordingPath, String cameraConfigFilePath) {
+    public static CCTVRecordingService getInstance(String outputRecordingPath, String cameraConfigFilePath, int bufferSize) {
         if(cctvRecordingService == null) {
-            cctvRecordingService = new CCTVRecordingService(outputRecordingPath, cameraConfigFilePath);
+            cctvRecordingService = new CCTVRecordingService(outputRecordingPath, cameraConfigFilePath, bufferSize);
         }
         return cctvRecordingService;
     }
@@ -129,6 +134,7 @@ public class CCTVRecordingService {
         watchServiceThreadPool = Executors.newFixedThreadPool(currentlyRecordingCameraDetailMap.size() + 1);
         ffmpegTaskThreadPool = Executors.newFixedThreadPool(currentlyRecordingCameraDetailMap.size());
         startStopRecordingScheduler = Executors.newSingleThreadScheduledExecutor();
+        filesPathsToProcess = new LinkedBlockingQueue<>(BUFFER_SIZE);
         createOutputDirectories();
         setUpWatchServices();
         startStopRecordingScheduler.schedule(this::startRecording, getTimeDifference(startTime), TimeUnit.MILLISECONDS);
@@ -260,14 +266,14 @@ public class CCTVRecordingService {
      * Preserves the root output directory itself.
      */
     private void clearAllDirectories() {
-        File outputDirectory = new File(outputRecordingPath);
+        File outputDirectory = new File(RECORDING_OUTPUT_PATH);
         if(!(outputDirectory.exists() && outputDirectory.isDirectory())) {
             logger.info("Output directory:" + outputDirectory.getAbsolutePath() + " does not exist. No need to clear old files.");
             return;
         }
         logger.info("Output directory:" + outputDirectory.getAbsolutePath() + " exists. Deleting old files and sub-folders");
-        try(Stream<Path> filePaths = Files.walk(Paths.get(outputRecordingPath))){
-                filePaths.filter(filePath -> !filePath.toString().equals(outputRecordingPath))
+        try(Stream<Path> filePaths = Files.walk(Paths.get(RECORDING_OUTPUT_PATH))){
+                filePaths.filter(filePath -> !filePath.toString().equals(RECORDING_OUTPUT_PATH))
                         .sorted(Comparator.reverseOrder()) // Delete files before directories
                         .forEach(filePath -> {
                             try {
@@ -278,7 +284,7 @@ public class CCTVRecordingService {
                         });
 
         } catch (IOException e) {
-            logger.error("Error processing directory " + outputRecordingPath + ": " + e.getMessage(), e);
+            logger.error("Error processing directory " + RECORDING_OUTPUT_PATH + ": " + e.getMessage(), e);
         }
     }
 
@@ -290,7 +296,7 @@ public class CCTVRecordingService {
      * @return Map of camera details indexed by resource ID
      */
     private Map<Integer, CameraRecordingDetails> readConfigFile(){
-        File cameraConfigPath = new File(cameraConfigFilePath);
+        File cameraConfigPath = new File(CAMERA_CONFIG_FILE_PATH);
         Map<Integer, CameraRecordingDetails> cameraRecordingDetailsMap = new HashMap<>();
         while (!cameraConfigPath.exists()) {
             logger.info("config.json not found at: " + cameraConfigPath.getAbsolutePath() + ", retrying in 30 seconds...");
@@ -329,8 +335,8 @@ public class CCTVRecordingService {
      */
     private void createOutputDirectories() {
         for(Map.Entry<Integer, CameraRecordingDetails> entry: currentlyRecordingCameraDetailMap.entrySet()){
-            String mp4FilesOutputPath = outputRecordingPath + "/" + entry.getValue().getCameraName() + "/output";
-            String logPath = outputRecordingPath + "/" + entry.getValue().getCameraName() + "/log";
+            String mp4FilesOutputPath = RECORDING_OUTPUT_PATH + "/" + entry.getValue().getCameraName() + "/output";
+            String logPath = RECORDING_OUTPUT_PATH + "/" + entry.getValue().getCameraName() + "/log";
             try {
                 Files.createDirectories(Paths.get(mp4FilesOutputPath));
                 Files.createDirectories(Paths.get(logPath));
@@ -353,7 +359,7 @@ public class CCTVRecordingService {
         // Set up watch services for each camera's output directory
         for(Map.Entry<Integer, CameraRecordingDetails> entry: currentlyRecordingCameraDetailMap.entrySet()){
             watchServiceThreadPool.submit(() -> {
-                Path pathToWatch = Paths.get(outputRecordingPath + "/" + entry.getValue().getCameraName() + "/output");
+                Path pathToWatch = Paths.get(RECORDING_OUTPUT_PATH + "/" + entry.getValue().getCameraName() + "/output");
                 try(WatchService watchService = FileSystems.getDefault().newWatchService();) {
                     pathToWatch.register(watchService,
                             StandardWatchEventKinds.ENTRY_CREATE);
@@ -371,8 +377,24 @@ public class CCTVRecordingService {
                         for (WatchEvent<?> event : key.pollEvents()) {
                             WatchEvent.Kind<?> kind = event.kind();
 
+                            // Check for the overflow event first!
+                            if (event.kind() == StandardWatchEventKinds.OVERFLOW) {
+                                logger.warn("File events may have been lost (queue overflow)!");
+                                continue; // Skip to the next event
+                            }
+
                             if(kind == StandardWatchEventKinds.ENTRY_CREATE) {
                                 logger.info("New file: " + event.context() + " added at " + pathToWatch);
+                                Path relativePath = (Path) event.context();
+                                String absoluteFilePath = new File(pathToWatch.resolve(relativePath).toUri()).getAbsolutePath();
+                                // Try to add to the queue but only wait for 2 seconds.
+                                boolean added = filesPathsToProcess.offer(absoluteFilePath, 2, TimeUnit.SECONDS);
+                                System.out.println("Queue: " + filesPathsToProcess);
+                                if (!added) {
+                                    // The queue was still full after 2 seconds.
+                                    // Log this problem so you can investigate.
+                                    logger.error("Could not add file to processing queue: " + absoluteFilePath);
+                                }
                             } else {
                                 logger.info("Invalid action (DELETION, MODIFY) performed at " + pathToWatch);
                             }
@@ -385,23 +407,25 @@ public class CCTVRecordingService {
                     }
                 } catch (IOException e) {
                     logger.error("Failed to register watch service for: " + entry.getValue().getCameraName(), e);
+                } catch (InterruptedException e) {
+                    logger.error("Watch service Thread for: " + entry.getValue().getCameraName() +" was interrupted", e);
                 }
             });
         }
 
         // Set up watch service for the configuration file
         watchServiceThreadPool.submit(()->{
-            Path pathToWatch = Paths.get(cameraConfigFilePath.substring(0,cameraConfigFilePath.lastIndexOf("/")));
+            Path pathToWatch = Paths.get(CAMERA_CONFIG_FILE_PATH.substring(0, CAMERA_CONFIG_FILE_PATH.lastIndexOf("/")));
             try(WatchService watchService = FileSystems.getDefault().newWatchService()){
                 pathToWatch.register(watchService,
                         StandardWatchEventKinds.ENTRY_MODIFY);
-                logger.info("Successfully registered watch service for: " + cameraConfigFilePath);
+                logger.info("Successfully registered watch service for: " + CAMERA_CONFIG_FILE_PATH);
                 while(true){
                     WatchKey key;
                     try {
                         key = watchService.take(); // Waits for a key to be signaled
                     } catch (InterruptedException e) {
-                        logger.error("WatchService Thread for " + cameraConfigFilePath + " interrupted.", e);
+                        logger.error("WatchService Thread for " + CAMERA_CONFIG_FILE_PATH + " interrupted.", e);
                         Thread.currentThread().interrupt();
                         return; // Exit if interrupted
                     }
@@ -423,7 +447,7 @@ public class CCTVRecordingService {
                     }
                 }
             } catch (IOException e) {
-                logger.error("Failed to register watch service for: " + cameraConfigFilePath, e);
+                logger.error("Failed to register watch service for: " + CAMERA_CONFIG_FILE_PATH, e);
             }
         });
     }
@@ -442,7 +466,7 @@ public class CCTVRecordingService {
             TaskBean taskBean = new TaskBean();
             Future<?> ffmpegTask = ffmpegTaskThreadPool.submit(()->{
                List<String> ffmpegArgs = getFfmpegArgs(entry.getValue());
-                String ffmpegLogFilePath = outputRecordingPath + "/" + entry.getValue().getCameraName() + "/log/ffmpeg_process.log";
+                String ffmpegLogFilePath = RECORDING_OUTPUT_PATH + "/" + entry.getValue().getCameraName() + "/log/ffmpeg_process.log";
                 ProcessBuilder.Redirect fileRedirect = ProcessBuilder.Redirect.appendTo(new File(ffmpegLogFilePath));
                 ProcessBuilder ffmpegProcessBuilder = new ProcessBuilder(ffmpegArgs);
                 ffmpegProcessBuilder.redirectError(fileRedirect);
@@ -473,7 +497,7 @@ public class CCTVRecordingService {
      */
     private List<String> getFfmpegArgs(CameraRecordingDetails cameraRecordingDetails) {
         List<String> ffmpegArgs = new ArrayList<>();
-        String outputFolder = outputRecordingPath + "/" + cameraRecordingDetails.getCameraName() +"/output/";
+        String outputFolder = RECORDING_OUTPUT_PATH + "/" + cameraRecordingDetails.getCameraName() +"/output/";
         ffmpegArgs.add("ffmpeg");
         ffmpegArgs.add("-fflags");
         ffmpegArgs.add("+genpts");         // Generate presentation timestamps
@@ -493,7 +517,7 @@ public class CCTVRecordingService {
 
     /**
      * Calculates the time difference in milliseconds between now and a specified time.
-     * 
+     *
      * @param dateTimeStr Date and time string in format "yyyy-MM-dd HH:mm:ss"
      * @return Time difference in milliseconds, or -1 if the time is in the past or invalid
      */
