@@ -1,0 +1,22 @@
+{
+  "chunkSize": 18,
+  "startTime": "2025-07-27 21:40:00",
+  "endTime": "2025-07-27 21:45:00",
+  "cameraDetails": [
+    {
+      "res_id": 1,
+      "cameraName": "Front Camera-1",
+      "rtspUrl": "rtsp://192.168.1.4:5540/1"
+    },
+    {
+      "res_id": 2,
+      "cameraName": "Rear Camera-1",
+      "rtspUrl": "rtsp://192.168.1.4:5541/1"
+    },
+    {
+      "res_id": 3,
+      "cameraName": "Side Camera-1",
+      "rtspUrl": "rtsp://192.168.1.4:5542/1"
+    }
+  ]
+}
