@@ -4,6 +4,7 @@ target/
 !**/src/test/**/target/
 cctv-recording-output
 logs
+config
 
 ### IntelliJ IDEA ###
 .idea
